@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/moov-io/signedxml"
+	"github.com/davidprtgnzlz/signedxml"
 
 	"github.com/stretchr/testify/require"
 )

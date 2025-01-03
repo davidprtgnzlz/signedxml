@@ -133,29 +133,29 @@ func (s *signatureData) parseSignedInfo() error {
 
 	// move the Signature level namespace down to SignedInfo so that the signature
 	// value will match up
-	if s.signedInfo.Space != "" {
-		attr := s.signature.SelectAttr(s.signedInfo.Space)
-		if attr != nil {
-			s.signedInfo.Attr = []etree.Attr{*attr}
-		}
-	} else {
-		attr := s.signature.SelectAttr("xmlns")
-		if attr != nil {
-			s.signedInfo.Attr = []etree.Attr{*attr}
-		}
-	}
+	// if s.signedInfo.Space != "" {
+	// 	attr := s.signature.SelectAttr(s.signedInfo.Space)
+	// 	if attr != nil {
+	// 		s.signedInfo.Attr = []etree.Attr{*attr}
+	// 	}
+	// } else {
+	// 	attr := s.signature.SelectAttr("xmlns")
+	// 	if attr != nil {
+	// 		s.signedInfo.Attr = []etree.Attr{*attr}
+	// 	}
+	// }
 
-	// Copy SignedInfo xmlns: into itself if it does not exist and is defined as a root attribute
-	root := s.xml.Root()
+	// // Copy SignedInfo xmlns: into itself if it does not exist and is defined as a root attribute
+	// root := s.xml.Root()
 
-	if root != nil {
-		sigNS := root.SelectAttr("xmlns:" + s.signedInfo.Space)
-		if sigNS != nil {
-			if s.signedInfo.SelectAttr("xmlns:"+s.signedInfo.Space) == nil {
-				s.signedInfo.CreateAttr("xmlns:"+s.signedInfo.Space, sigNS.Value)
-			}
-		}
-	}
+	// if root != nil {
+	// 	sigNS := root.SelectAttr("xmlns:" + s.signedInfo.Space)
+	// 	if sigNS != nil {
+	// 		if s.signedInfo.SelectAttr("xmlns:"+s.signedInfo.Space) == nil {
+	// 			s.signedInfo.CreateAttr("xmlns:"+s.signedInfo.Space, sigNS.Value)
+	// 		}
+	// 	}
+	// }
 
 	return nil
 }

@@ -7,6 +7,8 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/beevik/etree"
 )
@@ -40,6 +42,7 @@ type cryptoHash struct {
 
 // Signer provides options for signing an XML document
 type Signer struct {
+	localOps bool
 	signatureData
 	privateKey interface{}
 }
@@ -55,7 +58,7 @@ func NewSigner(xml string) (*Signer, error) {
 
 // NewSignerFromDoc returns a *Signer for the Document provided
 func NewSignerFromDoc(doc *etree.Document) (*Signer, error) {
-	s := &Signer{signatureData: signatureData{xml: doc}}
+	s := &Signer{localOps: false, signatureData: signatureData{xml: doc}}
 	return s, nil
 }
 
@@ -96,14 +99,53 @@ func (s *Signer) SetReferenceIDAttribute(refIDAttribute string) {
 	s.signatureData.refIDAttribute = refIDAttribute
 }
 
+// SetLocalOps set the local variable localOps to modify the behavior of the
+// library to work with specific tags and not with the entire document
+func (s *Signer) SetLocalOps(localOps bool) {
+	s.localOps = localOps
+}
+
 func (s *Signer) setDigest() (err error) {
+	var nss map[string]string
+	if s.localOps {
+		nss = make(map[string]string)
+		FindAllNamespaces(&s.xml.Copy().Element, nss)
+	}
+
 	references := s.signedInfo.FindElements("./Reference")
 	for _, ref := range references {
-		doc := s.xml.Copy()
+		var doc *etree.Document
+		if s.localOps {
+			doc, err = s.getReferencedXML(ref, s.xml.Copy())
+			if err != nil {
+				return err
+			}
+			if doc.Root().SelectAttr("xmlns:"+doc.Root().Space) == nil {
+				doc.Root().CreateAttr("xmlns:"+doc.Root().Space, nss[doc.Root().Space])
+			}
+
+			// FIX: la canonicalización se debe realizar con el método Transform ÚNICAMENTE sobre el tag al cual se
+			// le ha de calcular el/la Digest.
+			// En la librería original, se hace siempre sobre el documento completo, con lo que el resultado de la
+			// canonicalización es distinta al que se obtendría de hacer únicamente sobre el tag en cuestión
+			//			==> Ver estandar
+		} else {
+			doc = s.xml.Copy()
+		}
 
 		transforms := ref.SelectElement("Transforms")
 		if transforms != nil {
 			for _, transform := range transforms.SelectElements("Transform") {
+				if s.localOps {
+					nnss := make(map[string]struct{})
+					FindAllNeededNamespaces(&doc.Element, transform, false, nnss)
+					for k := range nnss {
+						if doc.Root().SelectAttr("xmlns:"+k) == nil {
+							doc.Root().CreateAttr("xmlns:"+k, nss[k])
+						}
+					}
+				}
+
 				doc, err = processTransform(transform, doc)
 				if err != nil {
 					return err
@@ -111,9 +153,11 @@ func (s *Signer) setDigest() (err error) {
 			}
 		}
 
-		doc, err := s.getReferencedXML(ref, doc)
-		if err != nil {
-			return err
+		if !s.localOps {
+			doc, err = s.getReferencedXML(ref, doc)
+			if err != nil {
+				return err
+			}
 		}
 
 		calculatedValue, err := calculateHash(ref, doc)
@@ -130,8 +174,38 @@ func (s *Signer) setDigest() (err error) {
 	return nil
 }
 
-func (s *Signer) setSignature() error {
-	canonSignedInfo, err := s.canonAlgorithm.ProcessElement(s.signedInfo, "")
+func (s *Signer) setSignature() (err error) {
+	var canonSignedInfo string
+	var signedInfoElement *etree.Element
+	canonMethodDocAsString := ""
+	if s.localOps {
+		nss := make(map[string]string)
+		nnss := make(map[string]struct{})
+		FindAllNamespaces(&s.xml.Copy().Element, nss)
+
+		signedInfoElement = s.signedInfo.Copy()
+		canonMethodElement := signedInfoElement.FindElement("./CanonicalizationMethod").Copy()
+		FindAllNeededNamespaces(signedInfoElement, canonMethodElement, false, nnss)
+
+		for k := range nnss {
+			if signedInfoElement.SelectAttr("xmlns:"+k) == nil {
+				signedInfoElement.CreateAttr("xmlns:"+k, nss[k])
+			}
+		}
+
+		if canonMethodElement != nil {
+			tDoc := etree.NewDocument()
+			tDoc.SetRoot(canonMethodElement)
+			canonMethodDocAsString, err = tDoc.WriteToString()
+			if err != nil {
+				return fmt.Errorf("signedxml: it has been impossible to obtain the CanonicalizationMethod element")
+			}
+		}
+	} else {
+		signedInfoElement = s.signedInfo
+	}
+
+	canonSignedInfo, err = s.canonAlgorithm.ProcessElement(signedInfoElement, canonMethodDocAsString)
 	if err != nil {
 		return err
 	}
@@ -173,4 +247,76 @@ func (s *Signer) setSignature() error {
 	sigValueElement.SetText(b64)
 
 	return nil
+}
+
+func FindAllNamespaces(node *etree.Element, nss map[string]string) {
+	for _, attr := range node.Attr {
+		if attr.Space == "xmlns" {
+			nss[attr.Key] = attr.Value
+		}
+	}
+	for i := 0; i < len(node.Child); i++ {
+		child := node.Child[i]
+		switch child := child.(type) {
+		case *etree.Element:
+			FindAllNamespaces(child, nss)
+		}
+	}
+}
+
+func FindAllNeededNamespaces(node *etree.Element, canonOrTransMethod *etree.Element, deepSearch bool, nnss map[string]struct{}) {
+	if nnss == nil {
+		nnss = make(map[string]struct{})
+	}
+
+	if node.Space != "" {
+		nnss[node.Space] = struct{}{}
+	}
+
+	if canonOrTransMethod != nil {
+		methodDoc := etree.NewDocument()
+		methodDoc.SetRoot(canonOrTransMethod.Copy())
+		prefixList := FindPrefixList(methodDoc)
+		for _, k := range prefixList {
+			nnss[k] = struct{}{}
+		}
+	}
+
+	if deepSearch {
+		findAllNeededNamespaces(node, nnss)
+	}
+}
+
+func findAllNeededNamespaces(node *etree.Element, nnss map[string]struct{}) {
+	if nnss == nil {
+		nnss = make(map[string]struct{})
+	}
+
+	if node.Space != "" {
+		nnss[node.Space] = struct{}{}
+	}
+
+	for i := 0; i < len(node.Child); i++ {
+		child := node.Child[i]
+		switch child := child.(type) {
+		case *etree.Element:
+			findAllNeededNamespaces(child, nnss)
+		}
+	}
+}
+
+func FindPrefixList(canonOrTransformMethod *etree.Document) (result []string) {
+	if canonOrTransformMethod == nil {
+		return []string{}
+	}
+
+	inclNSNode := canonOrTransformMethod.Root().SelectElement("InclusiveNamespaces")
+	if inclNSNode != nil {
+		prefixList := inclNSNode.SelectAttrValue("PrefixList", "")
+		if prefixList != "" {
+			result = strings.Split(prefixList, " ")
+		}
+	}
+
+	return
 }

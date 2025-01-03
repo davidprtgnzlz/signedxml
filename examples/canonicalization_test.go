@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/moov-io/signedxml"
+	"github.com/davidprtgnzlz/signedxml"
 
 	. "github.com/smartystreets/goconvey/convey"
 )

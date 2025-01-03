@@ -5,7 +5,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/moov-io/signedxml"
+	"github.com/davidprtgnzlz/signedxml"
 )
 
 func ExampleValidate() {

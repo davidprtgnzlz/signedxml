@@ -12,6 +12,7 @@ import (
 
 // Validator provides options for verifying a signed XML document
 type Validator struct {
+	localOps     bool
 	Certificates []x509.Certificate
 	signingCert  x509.Certificate
 	signatureData
@@ -23,7 +24,7 @@ func NewValidator(xml string) (*Validator, error) {
 	if err != nil {
 		return nil, err
 	}
-	v := &Validator{signatureData: signatureData{xml: doc}}
+	v := &Validator{localOps: false, signatureData: signatureData{xml: doc}}
 	return v, nil
 }
 
@@ -38,6 +39,12 @@ func (v *Validator) SetXML(xml string) error {
 	err := doc.ReadFromString(xml)
 	v.xml = doc
 	return err
+}
+
+// SetLocalOps set the local variable localOps to modify the behavior of the
+// library to work with specific tags and not with the entire document
+func (v *Validator) SetLocalOps(localOps bool) {
+	v.localOps = localOps
 }
 
 // SigningCert returns the certificate, if any, that was used to successfully
@@ -104,13 +111,40 @@ func (v *Validator) loadValuesFromXML() error {
 }
 
 func (v *Validator) validateReferences() (referenced []*etree.Document, err error) {
+	var nss map[string]string
+	if v.localOps {
+		nss = make(map[string]string)
+		FindAllNamespaces(&v.xml.Copy().Element, nss)
+	}
+
 	references := v.signedInfo.FindElements("./Reference")
 	for _, ref := range references {
-		doc := v.xml.Copy()
+		var doc *etree.Document
+		if v.localOps {
+			doc, err = v.getReferencedXML(ref, v.xml.Copy())
+			if err != nil {
+				return nil, err
+			}
+			if doc.Root().SelectAttr("xmlns:"+doc.Root().Space) == nil {
+				doc.Root().CreateAttr("xmlns:"+doc.Root().Space, nss[doc.Root().Space])
+			}
+		} else {
+			doc = v.xml.Copy()
+		}
 
 		transforms := ref.SelectElement("Transforms")
 		if transforms != nil {
 			for _, transform := range transforms.SelectElements("Transform") {
+				if v.localOps {
+					nnss := make(map[string]struct{})
+					FindAllNeededNamespaces(&doc.Element, transform, false, nnss)
+					for k := range nnss {
+						if doc.Root().SelectAttr("xmlns:"+k) == nil {
+							doc.Root().CreateAttr("xmlns:"+k, nss[k])
+						}
+					}
+				}
+
 				doc, err = processTransform(transform, doc)
 				if err != nil {
 					return nil, err
@@ -118,9 +152,11 @@ func (v *Validator) validateReferences() (referenced []*etree.Document, err erro
 			}
 		}
 
-		doc, err = v.getReferencedXML(ref, doc)
-		if err != nil {
-			return nil, err
+		if !v.localOps {
+			doc, err = v.getReferencedXML(ref, doc)
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		referenced = append(referenced, doc)
@@ -144,8 +180,35 @@ func (v *Validator) validateReferences() (referenced []*etree.Document, err erro
 	return referenced, nil
 }
 
-func (v *Validator) validateSignature() error {
-	canonSignedInfo, err := v.canonAlgorithm.ProcessElement(v.signedInfo, "")
+func (v *Validator) validateSignature() (err error) {
+	var nss map[string]string
+	var nnss map[string]struct{}
+	var canonMethodDocAsString = ""
+	if v.localOps {
+		nss = make(map[string]string)
+		nnss = make(map[string]struct{})
+		FindAllNamespaces(&v.xml.Copy().Element, nss)
+
+		canonMethodElement := v.signedInfo.FindElement("./CanonicalizationMethod").Copy()
+		FindAllNeededNamespaces(v.signedInfo, canonMethodElement, false, nnss)
+
+		for k := range nnss {
+			if v.signedInfo.SelectAttr("xmlns:"+k) == nil {
+				v.signedInfo.CreateAttr("xmlns:"+k, nss[k])
+			}
+		}
+
+		if canonMethodElement != nil {
+			tDoc := etree.NewDocument()
+			tDoc.SetRoot(canonMethodElement)
+			canonMethodDocAsString, err = tDoc.WriteToString()
+			if err != nil {
+				return fmt.Errorf("signedxml: it has been impossible to obtain the CanonicalizationMethod element")
+			}
+		}
+	}
+
+	canonSignedInfo, err := v.canonAlgorithm.ProcessElement(v.signedInfo, canonMethodDocAsString)
 	if err != nil {
 		return err
 	}

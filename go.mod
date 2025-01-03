@@ -1,4 +1,4 @@
-module github.com/moov-io/signedxml
+module github.com/davidprtgnzlz/signedxml
 
 go 1.21.0
 
